@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Marketing Budget Tracker</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+:root{--bg:#fafaf7;--card:#fff;--tx:#1d1d1b;--mu:#6b6b66;--bd:#e3e2dc;--ac:#2d5be3;--ok:#1f8a4c;--wa:#b7791f;--er:#c0392b;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#161615;--card:#212120;--tx:#ecebe6;--mu:#a09f98;--bd:#34332f;--ac:#7c9bff;--ok:#4ac17e;--wa:#e0a64a;--er:#ef7a6c;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#161615;--card:#212120;--tx:#ecebe6;--mu:#a09f98;--bd:#34332f;--ac:#7c9bff;--ok:#4ac17e;--wa:#e0a64a;--er:#ef7a6c;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:0 0 4px}p.s{color:var(--mu);margin:0 0 14px}
+nav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+nav button,.b{border:1px solid var(--bd);background:var(--card);color:var(--tx);padding:7px 12px;border-radius:8px;cursor:pointer;font:inherit}
+nav button.on,.b.p{background:var(--ac);color:#fff;border-color:var(--ac)}
+.c{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:14px;margin-bottom:14px}
+.c h2{font-size:15px;margin:0 0 10px}
+.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:10px}
+label{display:block;font-size:12px;color:var(--mu)}
+input,select{width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--tx);font:inherit}
+.w{overflow-x:auto}table{border-collapse:collapse;width:100%;min-width:640px}
+th,td{text-align:right;padding:6px 8px;border-bottom:1px solid var(--bd);white-space:nowrap}
+th:first-child,td:first-child,td.l,th.l{text-align:left}th{font-size:12px;color:var(--mu);font-weight:600}
+tr.t td{font-weight:700}.ok{color:var(--ok)}.wa{color:var(--wa)}.er{color:var(--er)}
+.k{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:14px}
+.k div{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px}.k small{color:var(--mu);display:block}.k b{font-size:18}
+.x{background:none;border:0;color:var(--er);cursor:pointer}
+.m{color:var(--mu);font-size:12px;margin-top:6px}.hide{display:none}
+</style></head><body><main>
+<h1>Marketing Budget Tracker</h1>
+<p class="s">Plan by quarter, log POs and invoices, and reconcile against the finance GL.</p>
+<p class="m" id="note"></p>
+<nav id="nav"></nav>
+<section id="v-dash"></section>
+<section id="v-plan" class="hide"></section>
+<section id="v-docs" class="hide"></section>
+<section id="v-fin" class="hide"></section>
+</main>
+<script>
+const Q=['Q1','Q2','Q3','Q4'];
+const S={lines:[],docs:[],gl:null,view:'dash',qf:'All'};
+let DB=null;
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const num=v=>{const n=parseFloat(String(v??'').replace(/[$,\s]/g,'').replace(/^\((.*)\)$/,'-$1'));return isNaN(n)?0:n};
+const f=n=>(n<0?'-':'')+'$'+Math.abs(Math.round(n)).toLocaleString();
+const nq=v=>{const m=String(v||'').toUpperCase().match(/Q?([1-4])/);return m?'Q'+m[1]:''};
+let seq=1;const uid=()=>'l'+Date.now().toString(36)+(seq++);
+
+/* ---- storage: shared db when available, in-memory otherwise ---- */
+async function add(col,data){
+  if(DB){await DB.collection(col).add(data)}else{const id=uid();S[col].push({id,...data});render()}}
+async function del(col,id){
+  if(DB){await DB.collection(col).doc(id).delete()}else{S[col]=S[col].filter(x=>x.id!==id);render()}}
+async function saveGL(o){
+  if(DB){await DB.collection('gl').doc('current').set(o)}else{S.gl=o;render()}}
+function listen(col,fn){DB.collection(col).onSnapshot(s=>{fn(s.docs.map(d=>({id:d.id,...d.data()})));render()},()=>{})}
+(async()=>{
+  try{
+    const c=window.claude&&await Promise.race([claude.use('db'),new Promise(r=>setTimeout(()=>r(null),10000))]);
+    if(c){DB=c;
+      listen('lines',a=>S.lines=a);listen('docs',a=>S.docs=a);
+      listen('gl',a=>S.gl=a.find(x=>x.id==='current')||null);
+      $('note').textContent='Shared data: everyone with access to this page sees the same plan, documents and GL.';
+    }else $('note').textContent='Shared storage isn’t available here, so data lives in this browser tab only and resets on reload.';
+  }catch(e){$('note').textContent='Shared storage isn’t available here, so data lives in this browser tab only.'}
+  render();
+})();
+
+/* ---- CSV ---- */
+function csv(t){
+  const rows=[];let r=[],c='',q=false;
+  for(let i=0;i<t.length;i++){const ch=t[i];
+    if(q){if(ch=='"'){if(t[i+1]=='"'){c+='"';i++}else q=false}else c+=ch}
+    else if(ch=='"')q=true;else if(ch==','){r.push(c);c=''}
+    else if(ch=='\n'||ch=='\r'){if(ch=='\r'&&t[i+1]=='\n')i++;r.push(c);c='';if(r.some(x=>x.trim()))rows.push(r);r=[]}
+    else c+=ch}
+  r.push(c);if(r.some(x=>x.trim()))rows.push(r);
+  if(!rows.length)return[];
+  const h=rows.shift().map(x=>x.trim().toLowerCase().replace(/[^a-z0-9]/g,''));
+  return rows.map(x=>Object.fromEntries(h.map((k,i)=>[k,(x[i]||'').trim()])));
+}
+const pick=(o,...ks)=>{for(const k of ks)if(o[k]!==undefined&&o[k]!=='')return o[k];return''};
+const readFile=file=>new Promise(r=>{const fr=new FileReader();fr.onload=()=>r(fr.result);fr.readAsText(file)});
+
+/* ---- calculations ---- */
+function calc(){
+  const m={};
+  const get=(code,q)=>{const k=code+'|'+q;return m[k]||(m[k]={code,q,plan:0,po:0,inv:0,act:0,acc:0})};
+  S.lines.forEach(l=>Q.forEach((q,i)=>{get(l.code,q).plan+=num(l['q'+(i+1)])}));
+  S.docs.forEach(d=>{const x=get(d.code,d.q);if(d.type==='PO')x.po+=num(d.amount);else x.inv+=num(d.amount)});
+  (S.gl?.rows||[]).forEach(g=>{const x=get(g.code,g.q);if(/accru/i.test(g.type))x.acc+=num(g.amount);else x.act+=num(g.amount)});
+  return Object.values(m);
+}
+function explain(x){
+  const gl=x.act+x.acc,d=x.inv-gl;
+  if(!S.gl)return['wa','Awaiting GL upload'];
+  if(Math.abs(d)<=1)return['ok','Matched'];
+  if(d>0)return['wa','Invoiced '+f(d)+' not yet in GL'];
+  if(x.acc>0)return['wa',f(-d)+' accrued without a matching invoice (pending)'];
+  return['er','GL exceeds invoices by '+f(-d)+' – check other-quarter invoices or missing docs'];
+}
+
+/* ---- views ---- */
+function nav(){
+  const t=[['dash','Dashboard'],['plan','Plan (Marketing)'],['docs','POs & Invoices (Marketing)'],['fin','GL Upload (Finance)']];
+  $('nav').innerHTML=t.map(([k,l])=>`<button class="${S.view==k?'on':''}" data-v="${k}">${l}</button>`).join('');
+  $('nav').onclick=e=>{const v=e.target.dataset.v;if(v){S.view=v;render()}};
+  t.forEach(([k])=>$('v-'+k).classList.toggle('hide',S.view!=k));
+}
+function dash(){
+  const all=calc().filter(x=>S.qf=='All'||x.q==S.qf);
+  const by={};all.forEach(x=>{const b=by[x.code]||(by[x.code]={code:x.code,plan:0,po:0,inv:0,act:0,acc:0});['plan','po','inv','act','acc'].forEach(k=>b[k]+=x[k])});
+  const nm=c=>S.lines.find(l=>l.code===c)?.name||'(not in plan)';
+  const rows=Object.values(by).sort((a,b)=>a.code.localeCompare(b.code));
+  const T=rows.reduce((t,r)=>{['plan','po','inv','act','acc'].forEach(k=>t[k]+=r[k]);return t},{plan:0,po:0,inv:0,act:0,acc:0});
+  const rem=T.plan-T.inv;const flagged=all.filter(x=>x.po>x.plan);
+  const detail=all.filter(x=>x.plan||x.po||x.inv||x.act||x.acc).sort((a,b)=>(a.code+a.q).localeCompare(b.code+b.q));
+  // timing hint: same line, opposite-sign gaps in different quarters
+  const hint=[];Object.keys(by).forEach(c=>{const g=detail.filter(x=>x.code==c).map(x=>({q:x.q,d:x.inv-(x.act+x.acc)})).filter(x=>Math.abs(x.d)>1);
+    const p=g.find(x=>x.d>0),n=g.find(x=>x.d<0);if(S.gl&&p&&n&&Math.abs(p.d+n.d)<=Math.max(1,.05*Math.abs(p.d)))hint.push(`${esc(c)}: ${f(p.d)} invoiced in ${p.q} appears in GL in ${n.q} (likely timing).`)});
+  $('v-dash').innerHTML=`
+  <div class="c"><label style="max-width:160px">Quarter<select id="qf">${['All',...Q].map(q=>`<option ${q==S.qf?'selected':''}>${q}</option>`).join('')}</select></label></div>
+  <div class="k"><div><small>Planned</small><b>${f(T.plan)}</b></div><div><small>PO committed</small><b>${f(T.po)}</b></div><div><small>Invoiced</small><b>${f(T.inv)}</b></div><div><small>GL actuals</small><b>${f(T.act)}</b></div><div><small>GL accruals</small><b>${f(T.acc)}</b></div><div><small>Remaining vs plan (invoiced)</small><b class="${rem<0?'er':'ok'}">${f(rem)}</b></div><div><small>POs over plan (review)</small><b class="${flagged.length?'wa':''}">${flagged.length}</b></div></div>
+  <div class="c"><h2>Status vs plan by budget line</h2><div class="w"><table><tr><th class="l">Line</th><th>Plan</th><th>PO</th><th>Invoiced</th><th>PO remaining</th><th class="l">PO vs plan</th><th>GL actual</th><th>GL accrual</th><th>% of plan invoiced</th></tr>
+  ${rows.map(r=>{const p=r.plan?Math.round(r.inv/r.plan*100):0,pr=r.po-r.inv,rv=all.filter(x=>x.code===r.code&&x.po>x.plan);return`<tr><td class="l">${esc(r.code)} – ${esc(nm(r.code))}</td><td>${f(r.plan)}</td><td>${f(r.po)}</td><td>${f(r.inv)}</td><td class="${pr<0?'er':''}">${f(pr)}${pr<0?' ⚠':''}</td><td class="l ${rv.length?'wa':''}">${rv.length?'⚠ Review ('+rv.map(x=>x.q).join(', ')+')':'OK'}</td><td>${f(r.act)}</td><td>${f(r.acc)}</td><td class="${p>100?'er':p>85?'wa':''}">${r.plan?p+'%':'–'}</td></tr>`}).join('')||'<tr><td class="l" colspan="9">No data yet. Add budget lines on the Plan tab.</td></tr>'}
+  <tr class="t"><td class="l">Total</td><td>${f(T.plan)}</td><td>${f(T.po)}</td><td>${f(T.inv)}</td><td class="${T.po-T.inv<0?'er':''}">${f(T.po-T.inv)}</td><td></td><td>${f(T.act)}</td><td>${f(T.acc)}</td><td>${T.plan?Math.round(T.inv/T.plan*100)+'%':'–'}</td></tr></table><p class="m">% of plan invoiced = invoiced ÷ planned spend for the selected quarter(s). It uses invoices only, not GL actuals or accruals. PO remaining = PO minus invoiced; a negative value (⚠) means invoices exceed the PO. POs should stay below plan; any line and quarter where a PO exceeds plan is flagged for review.</p></div></div>
+  ${flagged.length?`<div class="c"><h2>POs flagged for review (PO exceeds plan)</h2><div class="w"><table><tr><th class="l">Line</th><th>Qtr</th><th>Plan</th><th>PO</th><th>Over plan by</th></tr>${flagged.map(x=>`<tr><td class="l">${esc(x.code)} – ${esc(nm(x.code))}</td><td>${x.q}</td><td>${f(x.plan)}</td><td>${f(x.po)}</td><td class="wa">${f(x.po-x.plan)}</td></tr>`).join('')}</table></div></div>`:''}
+  <div class="c"><h2>Reconciliation: invoices vs GL (actuals + accruals)</h2><div class="w"><table><tr><th class="l">Line</th><th>Qtr</th><th>Invoiced</th><th>GL actual</th><th>GL accrual</th><th>Gap</th><th class="l">Explanation</th></tr>
+  ${detail.map(x=>{const[c,t]=explain(x);return`<tr><td class="l">${esc(x.code)}</td><td>${x.q}</td><td>${f(x.inv)}</td><td>${f(x.act)}</td><td>${f(x.acc)}</td><td>${f(x.inv-x.act-x.acc)}</td><td class="l ${c}">${t}</td></tr>`}).join('')||'<tr><td class="l" colspan="7">Nothing to reconcile yet.</td></tr>'}</table></div>
+  ${hint.length?`<p class="m">${hint.join('<br>')}</p>`:''}
+  ${S.gl?`<p class="m">GL file “${esc(S.gl.name)}” loaded ${new Date(S.gl.at).toLocaleDateString()}.</p>`:''}</div>`;
+  $('qf').onchange=e=>{S.qf=e.target.value;render()};
+}
+function plan(){
+  $('v-plan').innerHTML=`<div class="c"><h2>Add budget line</h2>
+  <div class="g"><label>Code<input id="pc" placeholder="MKT-101"></label><label>Name<input id="pn" placeholder="Paid social"></label><label>Owner<input id="po"></label>${Q.map((q,i)=>`<label>${q} plan ($)<input id="pq${i}" type="number" min="0"></label>`).join('')}</div>
+  <button class="b p" id="pa">Add line</button>
+  <p class="m">Or import a CSV with columns: code, name, owner, q1, q2, q3, q4.</p><input type="file" id="pcsv" accept=".csv"></div>
+  <div class="c"><h2>Budget lines</h2><div class="w"><table><tr><th class="l">Code</th><th class="l">Name</th><th class="l">Owner</th>${Q.map(q=>`<th>${q}</th>`).join('')}<th>Total</th><th></th></tr>
+  ${S.lines.map(l=>`<tr><td class="l">${esc(l.code)}</td><td class="l">${esc(l.name)}</td><td class="l">${esc(l.owner)}</td>${Q.map((q,i)=>`<td>${f(num(l['q'+(i+1)]))}</td>`).join('')}<td>${f([1,2,3,4].reduce((s,i)=>s+num(l['q'+i]),0))}</td><td><button class="x" data-d="${l.id}">Delete</button></td></tr>`).join('')||'<tr><td class="l" colspan="9">None yet.</td></tr>'}</table></div></div>`;
+  $('pa').onclick=()=>{const code=$('pc').value.trim();if(!code)return;
+    const o={code,name:$('pn').value.trim(),owner:$('po').value.trim()};Q.forEach((q,i)=>o['q'+(i+1)]=num($('pq'+i).value));add('lines',o)};
+  $('pcsv').onchange=async e=>{const fl=e.target.files[0];if(!fl)return;
+    for(const r of csv(await readFile(fl))){const code=pick(r,'code','line','budgetline');if(!code)continue;
+      await add('lines',{code,name:pick(r,'name','description'),owner:pick(r,'owner'),q1:num(r.q1),q2:num(r.q2),q3:num(r.q3),q4:num(r.q4)})}};
+  $('v-plan').onclick=e=>{if(e.target.dataset.d)del('lines',e.target.dataset.d)};
+}
+function docs(){
+  const opts=S.lines.map(l=>`<option value="${esc(l.code)}">${esc(l.code)} – ${esc(l.name)}</option>`).join('');
+  $('v-docs').innerHTML=`<div class="c"><h2>Add PO or invoice</h2>
+  <div class="g"><label>Type<select id="dt"><option>PO</option><option>Invoice</option></select></label><label>Number<input id="dn"></label><label>Vendor<input id="dv"></label><label>Budget line<select id="dl">${opts}</select></label><label>Amount ($)<input id="da" type="number"></label><label>Service quarter<select id="dq">${Q.map(q=>`<option>${q}</option>`).join('')}</select></label></div>
+  <button class="b p" id="dadd">Add</button><p class="m er" id="dmsg"></p>
+  <p class="m">Or import a CSV with columns: type, number, vendor, code, amount, quarter (use this for a Coupa export, mapping its columns to these).</p><input type="file" id="dcsv" accept=".csv"></div>
+  <div class="c"><h2>POs and invoices</h2><div class="w"><table><tr><th class="l">Type</th><th class="l">Number</th><th class="l">Vendor</th><th class="l">Line</th><th>Qtr</th><th>Amount</th><th></th></tr>
+  ${S.docs.map(d=>`<tr><td class="l">${esc(d.type)}</td><td class="l">${esc(d.number)}</td><td class="l">${esc(d.vendor)}</td><td class="l">${esc(d.code)}</td><td>${esc(d.q)}</td><td>${f(num(d.amount))}</td><td><button class="x" data-d="${d.id}">Delete</button></td></tr>`).join('')||'<tr><td class="l" colspan="7">None yet.</td></tr>'}</table></div></div>`;
+  $('dadd').onclick=()=>{if(!$('dl').value)return;
+    if($('dt').value==='Invoice'){const c=$('dl').value,q=$('dq').value,sum=t=>S.docs.filter(d=>d.code===c&&d.q===q&&d.type===t).reduce((s,d)=>s+num(d.amount),0);
+      const room=sum('PO')-sum('Invoice');if(num($('da').value)>room){$('dmsg').textContent='This invoice exceeds the remaining PO for '+c+' in '+q+' ('+f(Math.max(room,0))+' left). Add or increase the PO first.';return}}
+    let wn='';if($('dt').value==='PO'){const ln=S.lines.find(l=>l.code===$('dl').value),pl=ln?num(ln['q'+$('dq').value.slice(1)]):0,ex=S.docs.filter(d=>d.code===$('dl').value&&d.q===$('dq').value&&d.type==='PO').reduce((s,d)=>s+num(d.amount),0);if(ln&&ex+num($('da').value)>pl)wn='PO added, but it exceeds the '+$('dq').value+' plan for '+$('dl').value+' ('+f(pl)+') and is flagged for review.'}
+    $('dmsg').textContent=wn;add('docs',{type:$('dt').value,number:$('dn').value.trim(),vendor:$('dv').value.trim(),code:$('dl').value,amount:num($('da').value),q:$('dq').value})};
+  $('dcsv').onchange=async e=>{const fl=e.target.files[0];if(!fl)return;
+    for(const r of csv(await readFile(fl))){const code=pick(r,'code','line','budgetline','costcenter');if(!code)continue;
+      await add('docs',{type:/po|purchase/i.test(pick(r,'type'))?'PO':'Invoice',number:pick(r,'number','ponumber','invoicenumber'),vendor:pick(r,'vendor','supplier'),code,amount:num(pick(r,'amount','total')),q:nq(pick(r,'quarter','q','serviceperiod'))||'Q1'})}};
+  $('v-docs').onclick=e=>{if(e.target.dataset.d)del('docs',e.target.dataset.d)};
+}
+function fin(){
+  const n=S.gl?.rows?.length||0;
+  $('v-fin').innerHTML=`<div class="c"><h2>Upload GL data (Finance)</h2>
+  <p class="m">CSV columns: code, quarter, type (Actual or Accrual), amount, reference. Each upload replaces the previous GL file. Codes must match the budget line codes on the Plan tab.</p>
+  <input type="file" id="gcsv" accept=".csv">
+  ${S.gl?`<p class="m">Current file: “${esc(S.gl.name)}”, ${n} rows, uploaded ${new Date(S.gl.at).toLocaleString()}.</p>`:''}</div>
+  ${n?`<div class="c"><h2>Preview</h2><div class="w"><table><tr><th class="l">Code</th><th>Qtr</th><th class="l">Type</th><th>Amount</th><th class="l">Reference</th></tr>${S.gl.rows.slice(0,15).map(g=>`<tr><td class="l">${esc(g.code)}</td><td>${esc(g.q)}</td><td class="l">${esc(g.type)}</td><td>${f(num(g.amount))}</td><td class="l">${esc(g.ref)}</td></tr>`).join('')}</table></div>${n>15?`<p class="m">Showing 15 of ${n} rows.</p>`:''}</div>`:''}`;
+  $('gcsv').onchange=async e=>{const fl=e.target.files[0];if(!fl)return;
+    const rows=csv(await readFile(fl)).map(r=>({code:pick(r,'code','line','budgetline','costcenter'),q:nq(pick(r,'quarter','q','period')),type:/accru/i.test(pick(r,'type','entrytype'))?'Accrual':'Actual',amount:num(pick(r,'amount','total','net')),ref:pick(r,'reference','ref','description','journal')})).filter(r=>r.code&&r.q);
+    saveGL({name:fl.name,at:Date.now(),rows})};
+}
+function render(){nav();dash();plan();docs();fin()}
+render();
+</script></body></html>
